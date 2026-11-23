@@ -1,0 +1,7 @@
+__pycache__/
+*.pyc
+*.pyo
+output/
+output_inference/
+*.log
+.DS_Store

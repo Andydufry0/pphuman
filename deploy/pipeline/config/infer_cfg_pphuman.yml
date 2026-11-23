@@ -1,0 +1,78 @@
+crop_thresh: 0.5
+attr_thresh: 0.5
+kpt_thresh: 0.2
+visual: true
+warmup_frame: 10
+DET:
+  model_dir: E:/pphuman/cache/paddle/infer_weights/mot_ppyoloe_l_36e_pipeline
+  batch_size: 1
+MOT:
+  model_dir: E:/pphuman/cache/paddle/infer_weights/mot_ppyoloe_l_36e_pipeline
+  tracker_config: deploy/pipeline/config/tracker_config.yml
+  batch_size: 1
+  skip_frame_num: -1
+  enable: true
+KPT:
+  model_dir: E:/pphuman/cache/paddle/infer_weights/dark_hrnet_w32_256x192
+  batch_size: 16
+  skip_frame_num: 1
+  interval_ms: 100
+  enable: true
+ATTR:
+  model_dir: E:/pphuman/cache/paddle/infer_weights/PPLCNet_x1_0_person_attribute_945_infer
+  batch_size: 8
+  enable: false
+VIDEO_ACTION:
+  model_dir: E:/pphuman/cache/paddle/infer_weights/ppTSM
+  batch_size: 1
+  frame_len: 8
+  sample_freq: 7
+  short_size: 340
+  target_size: 320
+  enable: true
+SKELETON_ACTION:
+  model_dir: E:/pphuman/cache/paddle/infer_weights/STGCN
+  batch_size: 1
+  max_frames: 50
+  display_frames: 40
+  coord_size:
+  - 384
+  - 512
+  enable: true
+ID_BASED_DETACTION:
+  model_dir: E:/pphuman/cache/paddle/infer_weights/ppyoloe_crn_s_80e_smoking_visdrone
+  batch_size: 8
+  threshold: 0.65
+  display_frames: 20
+  skip_frame_num: 10
+  interval_ms: 500
+  enable: true
+ID_BASED_CLSACTION:
+  model_dir: E:/pphuman/cache/paddle/infer_weights/PPHGNet_tiny_calling_halfbody
+  batch_size: 8
+  threshold: 0.5
+  display_frames: 80
+  skip_frame_num: 2
+  enable: false
+REID:
+  model_dir: E:/pphuman/cache/paddle/infer_weights/reid_model
+  batch_size: 16
+  enable: false
+CROWD_GATHERING:
+  enable: true
+  region: null
+  crowd_threshold: 5
+  alert_duration: 3.0
+LOITERING:
+  enable: true
+  region: null
+  loitering_threshold: 10.0
+  movement_threshold: 50.0
+RUNNING:
+  enable: true
+  speed_threshold: 400.0
+  min_frames: 5
+ABNORMAL_POSTURE:
+  enable: true
+  fall_angle_threshold: 60.0
+  symmetry_threshold: 0.3
