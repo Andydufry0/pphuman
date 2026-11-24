@@ -1,4 +1,4 @@
-# PP-Human 行为监测（Python 版）
+# PP-Human 行为监测
 
 基于 [PaddleDetection 2.9](https://github.com/PaddlePaddle/PaddleDetection) 的 PP-Human 行人行为分析部署代码，支持行为识别：
 
@@ -8,7 +8,14 @@
 - 打电话（CALL，ID-based 图像分类）
 - 人群聚集 / 徘徊 / 奔跑 / 异常姿态（规则）
 
-> **C++/Qt 版**：多路实时运行与工业报警的桌面实现在 [`qt/`](qt/)，TensorRT 推理、Qt5 界面、相机/RTSP/HLS 接入，模型转换与本目录 Python 版共用。
+本仓库包含两套实现，共用同一套 PP-Human 模型：
+
+| 目录 | 技术栈 | 用途 |
+| --- | --- | --- |
+| [`qt/`](qt/) | **C++17 / Qt5 / TensorRT 10** | 多路实时运行、工业报警、相机 / RTSP / HLS 接入 |
+| [`deploy/`](deploy/) [`configs/`](configs/) | Python / PaddlePaddle | 模型转换、算法对照、离线验证 |
+
+C++ 版说明见 [`qt/README.md`](qt/README.md)。
 
 ## 目录结构
 
