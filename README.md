@@ -1,74 +1,52 @@
-# PP-Human 行为监测
+# PPHuman-Qt — PP-Human 行为分析（C++ / Qt5 / TensorRT）
 
-基于 [PaddleDetection 2.9](https://github.com/PaddlePaddle/PaddleDetection) 的 PP-Human 行人行为分析部署代码，支持行为识别：
+PP-Human 行为分析的 C++ 桌面端：TensorRT 推理、Qt5 界面、多路实时运行与工业报警。
 
-- 摔倒（FALL，STGCN 骨架时序）
-- 打架（FIGHT，ppTSM 视频分类）
-- 抽烟（SMOKE，ID-based 目标检测）
-- 打电话（CALL，ID-based 图像分类）
-- 人群聚集 / 徘徊 / 奔跑 / 异常姿态（规则）
+![ui](ui_capture.png)
 
-本仓库包含两套实现，共用同一套 PP-Human 模型：
+> **Python 版已归档**：Paddle 推理管线、模型转换与算法对照代码收在 [`python-legacy/`](python-legacy/)，
+> 不再维护，仅作参考与历史追溯（标签 `python-legacy-v1`）。
+> 首次部署仍需要用它里面的脚本把权重转成 engine。
 
-| 目录 | 技术栈 | 用途 |
+## 依赖
+
+| 组件 | 版本 |
+| --- | --- |
+| Qt | 5.14.2 msvc2017_64 |
+| OpenCV | 4.12.0 (opencv_world4120) |
+| TensorRT | 10.16.1.11 |
+| CUDA | 12.9 |
+| MSVC | VS2022 14.44 + WinSDK 10.0.26100 |
+
+路径在 `PPHuman-Qt.pro` 里改（`OPENCV` / `TRT` / `CUDA`），然后 `qmake` + `nmake`，或直接用 `build.bat`。
+
+## 模型
+
+仓库不含权重。用 `python-legacy/` 里的环境把 PP-Human 的五个模型转成 engine，放到 `models/`：
+
+```
+models/mot.engine      ppyoloe 行人检测
+models/kpt.engine      HRNet 关键点
+models/smoke.engine    抽烟分类
+models/ppTSM.engine    打架（8 帧 clip）
+models/STGCN.engine    摔倒（50 帧骨架）
+```
+
+参数与官方 pp-human pipeline 对齐（`crop_thresh 0.5`、`kpt_thresh 0.2`、MOT `track_high 0.3 / low 0.2 / new 0.4 / buffer 30`）。
+
+## 行为
+
+| 事件 | 来源 | 确认方式 |
 | --- | --- | --- |
-| [`qt/`](qt/) | **C++17 / Qt5 / TensorRT 10** | 多路实时运行、工业报警、相机 / RTSP / HLS 接入 |
-| [`deploy/`](deploy/) [`configs/`](configs/) | Python / PaddlePaddle | 模型转换、算法对照、离线验证 |
+| FALL | STGCN 骨架 | 满 50 帧窗口 + 连续 6 帧 |
+| FIGHT | ppTSM | 连续 2 个 clip |
+| SMOKE | 抽烟分类 | 每 0.5s 一次 + 连续 3 次 |
+| POSTURE | 关键点规则 | 连续 4 帧 |
+| RUN | 跟踪净位移 | 400 px/s（按画面高归一化） |
+| CROWD / LOITER | 跟踪规则 | 人数 / 停留时长 |
 
-C++ 版说明见 [`qt/README.md`](qt/README.md)。
+`th_fall` 默认 0.85 —— STGCN 在蹲姿、坐姿、打电话等非摔倒场景会给出 0.79~0.85 的弱正例，真摔倒接近 1.00。
 
-## 目录结构
+## 已知局限
 
-```
-deploy/pipeline/           # PP-Human 主流程
-  pipeline.py              # 入口（支持 视频 / 图片 / RTSP）
-  pphuman/                 # 行为模型封装
-    action_infer.py        # 摔倒/打架/抽烟/打电话推理
-    action_utils.py        # 关键点缓冲、结果可视化
-    extended_actions.py    # 聚集/徘徊/奔跑/姿态规则
-    scheduler.py           # 时间门控（分频推理）
-    trt_backend.py         # TensorRT 后端
-deploy/python/             # 检测/关键点/预处理/可视化基础模块
-deploy/pptracking/         # 多目标跟踪（ByteTrack / SDE）
-configs/pphuman/           # 各模型训练配置
-config/infer_cfg_pphuman.yml  # 推理配置（模型路径、阈值、开关）
-```
-
-## 使用方式
-
-本仓库只包含**部署推理部分**，需置于完整 PaddleDetection 2.9 根目录下使用。
-
-```bash
-# 1. 下载推理模型（放到 infer_cfg_pphuman.yml 里配置的 model_dir）
-python deploy/pipeline/download.py   # 或按官方文档手动下载
-
-# 2. 跑单视频
-python deploy/pipeline/pipeline.py \
-  --config deploy/pipeline/config/infer_cfg_pphuman.yml \
-  --video_file=test.mp4 \
-  --device=GPU --run_mode=paddle
-
-# 3. 跑 RTSP 流
-python deploy/pipeline/pipeline.py \
-  --config deploy/pipeline/config/infer_cfg_pphuman.yml \
-  --rtsp=rtsp://user:pass@ip:554/stream \
-  --device=GPU
-```
-
-## 关键参数（config/infer_cfg_pphuman.yml）
-
-| 模块 | 参数 | 官方默认 |
-|---|---|---|
-| SKELETON_ACTION (摔倒) | max_frames / coord_size | 50 / [384, 512] |
-| ID_BASED_DETACTION (抽烟) | threshold / interval_ms / display_frames | 0.65 / 500 / 20 |
-| VIDEO_ACTION (打架) | frame_len / sample_freq | 8 / 7 |
-| SPEED / 跟踪 | track_high / low / new / buffer | 0.3 / 0.2 / 0.4 / 30 |
-
-## 说明
-
-- 摔倒（STGCN）对"蹲下/弯腰"存在固有误判，属于模型能力边界；生产环境建议叠加多帧确认或二次判据。
-- 抽烟/打架/姿态这类模型，官方原始用途是**可视化**而非告警；若要用于报警，务必加多帧确认，否则单帧噪声会大量误报。
-
-## 许可
-
-代码源自 PaddleDetection（Apache-2.0），遵循同一许可。
+打架 / 抽烟 / STGCN 三个模型在官方 pipeline 里只做可视化、不做报警，直接单帧取阈值会大面积误报，因此本项目都加了多帧 / 多 clip 连续确认。即便如此，站立打电话、抽烟、蹲下仍可能偶发一次 FALL（每个片段 ≤1 次），这是模型固有边界，硬压阈值会漏掉真实摔倒。
