@@ -26,7 +26,7 @@ struct Config {
     float th_loiter  = 0.50f;
     float th_run     = 0.50f;
     float th_posture = 0.50f;
-    // smoke: official ID_BASED_DETACTION threshold 0.65;
+    // smoke: official ID_BASED_DETACTION threshold 0.6; local 0.65 is stricter
     // fight/fall: official action_infer threshold 0.5
     float th_smoke   = 0.65f;
     float th_fight   = 0.50f;
@@ -45,7 +45,7 @@ struct Config {
     float postureSym   = 0.30f;  // limb symmetry ratio
     float smokeInterval = 0.5f;  // seconds between smoke checks
     int   fightSampleFreq = 7;   // sample every N frames
-    int   fallKeepFrames  = 40;  // alert display frames
+    int   fallKeepFrames  = 80;  // alert display frames (official display_frames)
     int   analyzeEvery    = 1;   // analyse every Nth frame (multi-channel
                                  // deployment: 15fps cam + N=2 -> 7.5fps/路)
 

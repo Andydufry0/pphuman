@@ -34,7 +34,8 @@ private slots:
     void onStartStop();      // 启动/停止全部通道（自动开始内部调用）
     void onSettings();       // 菜单：检测与行为设置对话框
     void onConnectSource();  // 菜单：连接 -> 切换到该公共摄像头
-    void refreshLocalCameras();  // 每次展开"连接"菜单时重新枚举本地摄像头
+    void refreshLocalCameras();  // 枚举本地摄像头并重建菜单项（启动时一次 / 手动重扫）
+    void onRescanCameras();      // 菜单：强制重新扫描本地摄像头
     void onSourceError(const QString &msg);
 
 private:
@@ -74,7 +75,7 @@ private:
     QAction *actSet_ = nullptr;              // settings menu action
     QMenu *connectMenu_ = nullptr;           // 连接菜单：本地摄像头动态段 + 固定公共源
     QAction *localCamAnchor_ = nullptr;      // 分隔符锚点：本地摄像头项插在它之前
-    QList<QAction*> localCamActions_;        // 动态枚举出的本地摄像头项（每次展开重建）
+    QList<QAction*> localCamActions_;        // 枚举出的本地摄像头项（启动 / 重扫时重建）
     bool running_ = false;
     QString placeName_;                      // current camera place -> window title
 };

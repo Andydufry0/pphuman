@@ -41,7 +41,7 @@ public:
 
     // hot-adjustable scalars (benign cross-thread writes of aligned values)
     std::atomic<float> smokeInterval_{0.5f};   // seconds between smoke checks
-    std::atomic<int>   fallKeepFrames_{40};    // FALL alert display frames
+    std::atomic<int>   fallKeepFrames_{80};    // FALL alert display frames
     std::atomic<int>   minPersonH_{80};        // min person box height for action AI
 
 signals:
@@ -119,13 +119,13 @@ private:
     // per-instance pipeline state — NO statics here: every channel must be
     // independently restartable and safe to run side by side (multi-channel)
     std::unordered_map<int, std::vector<cv::Point3f>> kptById_;
-    double lastKpt_ = -1;                              // kpt 10 Hz gate
+    double lastKpt_ = -1;                              // last analysed frame KPT ran on (every frame, official PP-Human)
     double lastSmoke_ = -1;                            // smoke 2 Hz gate
     std::unordered_map<int, bool> smokeState_;
-    std::unordered_map<int, int> smokeLife_;   // marker lifetime (display_frames: 20)
+    std::unordered_map<int, int> smokeLife_;   // marker lifetime (display_frames: 80)
     // smoke debouncing: consecutive positive checks per track before alerting
     std::unordered_map<int, int> smokeStreak_;
-    std::unordered_set<int> smokeReported_;
+    std::unordered_map<int, double> smokeLastAlert_;  // video-time of last SMOKE alert (cooldown)
 
     // fight (ppTSM): latest clip decision, kept until next clip
     bool fightState_ = false;
@@ -133,10 +133,9 @@ private:
     // fight debouncing: consecutive positive clips before alerting
     int fightStreak_ = 0;
     bool fightReported_ = false;
-    // fall (STGCN): sticky display life per track (frames, like Python)
+    // fall (STGCN): sticky display life per track (frames, official
+    // ActionVisualHelper semantics: state holds, non-falling results ignored)
     std::unordered_map<int, int> fallLife_;
-    // fall debouncing: consecutive confirmations + dedup until recovery
-    std::unordered_map<int, int> fallStreak_;
     std::unordered_set<int> fallReported_;
 
     std::string alertDir_;   // evidence snapshots (exe_dir/alerts)

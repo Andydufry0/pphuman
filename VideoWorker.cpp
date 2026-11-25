@@ -183,6 +183,34 @@ static bool isCameraIndex(const std::string &s) {
     return true;
 }
 
+// 本地摄像头默认跑最大分辨率。
+// OpenCV 对不支持的分辨率不报错（MSMF/DSHOW 要么静默忽略、要么就近给一档），
+// 所以只能"设一次、读回一次"：逐档试，记住实际拿到过的最大尺寸，最后落回该档。
+// 先切 MJPG：多数 UVC 摄像头 2K/4K 档只在 MJPEG 下可用，YUY2 带宽不够；
+// 设置失败无副作用（读回仍是原格式）。
+static void applyMaxCameraResolution(cv::VideoCapture &cap) {
+    static const int cand[][2] = {
+        {3840,2160},{2592,1944},{2560,1440},{2560,1920},{2048,1536},
+        {1920,1080},{1600,1200},{1280,960},{1280,720},{1024,768},{800,600},{640,480}
+    };
+    cap.set(cv::CAP_PROP_FOURCC, cv::VideoWriter::fourcc('M', 'J', 'P', 'G'));
+    int bestW = 0, bestH = 0;
+    for (const auto &c : cand) {
+        cap.set(cv::CAP_PROP_FRAME_WIDTH,  c[0]);
+        cap.set(cv::CAP_PROP_FRAME_HEIGHT, c[1]);
+        int w = (int)cap.get(cv::CAP_PROP_FRAME_WIDTH);
+        int h = (int)cap.get(cv::CAP_PROP_FRAME_HEIGHT);
+        if ((long long)w * h > (long long)bestW * bestH) { bestW = w; bestH = h; }
+        if (w >= c[0] && h >= c[1]) break;   // 该档确实拿到了，往下只会更小
+    }
+    if (bestW > 0) {
+        cap.set(cv::CAP_PROP_FRAME_WIDTH,  bestW);
+        cap.set(cv::CAP_PROP_FRAME_HEIGHT, bestH);
+    }
+    fprintf(stderr, "[camera] resolution -> %dx%d\n", bestW, bestH);
+    fflush(stderr);
+}
+
 static cv::Scalar trackColor(int id) {
     return cv::Scalar((id * 47) % 256, (id * 91) % 256, (id * 173) % 256);
 }
@@ -316,7 +344,8 @@ void VideoWorker::run() {
     lastKpt_ = lastSmoke_ = -1;
     smokeState_.clear();
     smokeLife_.clear();
-    fallStreak_.clear();
+    smokeStreak_.clear();
+    smokeLastAlert_.clear();
     fallReported_.clear();
     fallLife_.clear();
     fightState_ = false;
@@ -412,12 +441,17 @@ void VideoWorker::run() {
         }
         auto tracks = tracker_.update(detBoxes, detScores);
 
-        // 2. keypoint branch @ 10 Hz (posture / fall need it; skeleton overlay)
+        // 2. keypoint branch: every analysed frame (posture / fall need it)
         // cache by track_id: track order changes per frame, key by ID
         if (kpt_.ready() && (enabledMask_ & (BIT_POSTURE | BIT_FALL))) {
-            double now = frameCount_ / fps;
-            if (now - lastKpt_ >= 0.1) {
-                lastKpt_ = now;
+            // KPT 每个分析帧都跑一次 —— 官方 PP-Human 就是这么做的（每帧
+            // crop_image_with_mot -> HRNet，没有分频门控）。关键点在于
+            // STGCN 的 max_frames=50 指的是 50 个**连续视频帧**，25fps 下
+            // ≈ 2 s，和训练集帧率一致。原实现按 10 Hz 采样，50 帧 = 5 s，
+            // 时间轴被拉慢 2.5 倍：摔倒的快速下坠被摊平成慢动作、静止画面
+            // 又被拉长，结果是既容易误报、又需要更长的连续确认才报。
+            if (lastKpt_ != (double)frameCount_) {
+                lastKpt_ = (double)frameCount_;
                 // official PP-Human KPT batch_size: 16 persons per pass
                 int n = std::min<size_t>(tracks.size(), 16);
                 std::vector<std::vector<cv::Point3f>> kptsAll;
@@ -431,6 +465,10 @@ void VideoWorker::run() {
                     // -> STGCN false falls. Skip them (0 = disabled).
                     int minH = minPersonH_.load();
                     if (minH > 0 && b.height < (float)minH) continue;
+                    // official crop_thresh 0.5: KPT / skeleton action only run
+                    // on detections with score >= 0.5 (MOT tracks down to 0.3).
+                    // Low-score boxes give garbage keypoints -> STGCN noise.
+                    if (tracks[i].score < 0.5f) continue;
                     // official KPT branch crops with 30%-expanded box (expand_crop)
                     float hh = b.height * 1.3f * 0.5f, wh = b.width * 1.3f * 0.5f;
                     if (hh > wh * 4.f / 3.f) wh = hh * 0.75f;
@@ -470,31 +508,57 @@ void VideoWorker::run() {
                 if ((enabledMask_ & BIT_POSTURE) && !kptsAll.empty())
                     behavior_.updateKeypoints(kptsAll, kb);
 
-                // falling (STGCN): per-track rolling 50-frame window, infer
-                // every KPT frame (10 Hz), alert within ~0.1 s of the fall
+                // falling (STGCN): official semantics — one non-overlapping
+                // 50-frame window per decision (KeyPointBuff pops and resets),
+                // plus ActionVisualHelper's sticky state: while a track is in
+                // the falling state, later non-falling results do NOT override
+                // it until the display window expires. That sticky state is
+                // what keeps score jitter around the threshold from re-firing.
                 if (fall_.ready() && (enabledMask_ & BIT_FALL)) {
                     std::vector<int> fids;
                     fids.reserve(kb.size());
                     for (auto &t : kb) fids.push_back(t.id);
                     auto fres = fall_.update(fids, fboxEx, kptsAll);
-                    // industrial debouncing: require 6 consecutive positive
-                    // confirmations (~0.6 s @10 Hz) before alerting; short
-                    // false positives from unstable tracks never reach this.
-                    // Dedup until the track recovers: one alert per fall.
                     for (auto &r : fres) {
                         bool fall = r.falling && r.score >= thFall_.load();
-                        if (fall) {
-                            if (++fallStreak_[r.id] >= 6) {
-                                fallLife_[r.id] = fallKeepFrames_.load();
-                                if (!fallReported_.count(r.id)) {
-                                    logAlert(frame, tracks, "FALL",
-                                        QString("id=%1 score=%2").arg(r.id).arg(r.score, 0, 'f', 2));
-                                    fallReported_.insert(r.id);
-                                }
+                        if (!fall) continue;              // sticky: ignore false
+                        // fall (falling) is the only action class in the
+                        // official STGCN model (0=fall, 1=other) — there is no
+                        // "get up" class. Detect the transition here instead.
+                        // Scene gate (NOT official): STGCN keeps scoring
+                        // ~0.96-1.00 on a person standing still on the phone.
+                        // At a real fall keypoints span the box vertically
+                        // (vspan>0.65) and the box is either still tall
+                        // (w/h<0.9, fall in progress) OR the torso has already
+                        // gone near-horizontal (torso<40 deg, lying flat).
+                        // A standing subject fails both branches.
+                        bool geomOk = false;
+                        for (size_t bi = 0; bi < kb.size(); ++bi) {
+                            if (kb[bi].id != r.id || bi >= kptsAll.size()) continue;
+                            float w = std::max(kb[bi].w, 1e-3f), h = std::max(kb[bi].h, 1e-3f);
+                            float ymin = 1e9f, ymax = -1e9f;
+                            for (auto &p : kptsAll[bi]) {
+                                if (p.z < 0.2f) continue;
+                                ymin = std::min(ymin, p.y); ymax = std::max(ymax, p.y);
                             }
-                        } else {
-                            fallStreak_[r.id] = 0;
-                            fallReported_.erase(r.id);
+                            float vs = (ymax > ymin) ? (ymax - ymin) / h : 0.f;
+                            float sx = (kptsAll[bi][5].x + kptsAll[bi][6].x) * .5f;
+                            float sy = (kptsAll[bi][5].y + kptsAll[bi][6].y) * .5f;
+                            float hx = (kptsAll[bi][11].x + kptsAll[bi][12].x) * .5f;
+                            float hy = (kptsAll[bi][11].y + kptsAll[bi][12].y) * .5f;
+                            float deg = std::atan2(std::fabs(hy - sy), std::fabs(hx - sx)) * 57.2958f;
+                            geomOk = (vs > 0.65f) && ((w / h < 0.90f) || (deg < 40.0f));
+                            fprintf(stderr, "[FALLCHK] id=%d score=%.3f wh=%.2f vspan=%.2f torso=%.1f gate=%d\n",
+                                    r.id, r.score, w / h, vs, deg, (int)geomOk);
+                            break;
+                        }
+                        if (!geomOk) continue;
+                        bool inState = fallLife_.count(r.id) > 0;
+                        fallLife_[r.id] = fallKeepFrames_.load();   // refresh / enter
+                        if (!inState && !fallReported_.count(r.id)) {
+                            logAlert(frame, tracks, "FALL",
+                                QString("id=%1 score=%2").arg(r.id).arg(r.score, 0, 'f', 2));
+                            fallReported_.insert(r.id);
                         }
                     }
                 }
@@ -504,11 +568,6 @@ void VideoWorker::run() {
                     bool found = false;
                     for (auto &t : tracks) if (t.id == it->first) { found = true; break; }
                     if (!found) it = kptById_.erase(it); else ++it;
-                }
-                for (auto it = fallStreak_.begin(); it != fallStreak_.end();) {
-                    bool found = false;
-                    for (auto &t : tracks) if (t.id == it->first) { found = true; break; }
-                    if (!found) it = fallStreak_.erase(it); else ++it;
                 }
                 for (auto it = fallReported_.begin(); it != fallReported_.end();) {
                     bool found = false;
@@ -521,10 +580,10 @@ void VideoWorker::run() {
                     for (auto &t : tracks) if (t.id == it->first) { found = true; break; }
                     if (!found) it = smokeStreak_.erase(it); else ++it;
                 }
-                for (auto it = smokeReported_.begin(); it != smokeReported_.end();) {
+                for (auto it = smokeLastAlert_.begin(); it != smokeLastAlert_.end();) {
                     bool found = false;
-                    for (auto &t : tracks) if (t.id == *it) { found = true; break; }
-                    if (!found) it = smokeReported_.erase(it); else ++it;
+                    for (auto &t : tracks) if (t.id == it->first) { found = true; break; }
+                    if (!found) it = smokeLastAlert_.erase(it); else ++it;
                 }
                 for (auto it = smokeState_.begin(); it != smokeState_.end();) {
                     bool found = false;
@@ -587,25 +646,29 @@ void VideoWorker::run() {
                     if (d.cls == 0 && d.score >= thSmoke_.load()) { smoking = true; break; }
                 smokeState_[tracks[i].id] = smoking;
                 if (smoking) {
-                    smokeLife_[tracks[i].id] = 20;   // official display_frames
+                    smokeLife_[tracks[i].id] = 80;   // official display_frames
                     // industrial debouncing: single-frame model hits are noise
                     // (official only visualizes, never alerts). Require 3
                     // consecutive checks (~1.5 s @2 Hz) before alerting, and
                     // dedup one alert per track until it recovers.
-                    if (++smokeStreak_[tracks[i].id] >= 3 &&
-                        !smokeReported_.count(tracks[i].id)) {
+                    // Cooldown: same target alerts at most once per 20 s of
+                    // video time. Without it, a 1-frame detection drop resets
+                    // the streak and the same smoker re-alerts every second.
+                    auto la = smokeLastAlert_.find(tracks[i].id);
+                    bool cooled = (la == smokeLastAlert_.end()) ||
+                                  (nowS - la->second >= 20.0);
+                    if (++smokeStreak_[tracks[i].id] >= 3 && cooled) {
                         logAlert(frame, tracks, "SMOKE",
                             QString("id=%1").arg(tracks[i].id));
-                        smokeReported_.insert(tracks[i].id);
+                        smokeLastAlert_[tracks[i].id] = nowS;
                     }
                 } else {
                     smokeStreak_[tracks[i].id] = 0;
-                    smokeReported_.erase(tracks[i].id);
                 }
             }
         }
-        // smoking markers with official display_frames: 20 lifetime — the
-        // marker stays ~1 s after the alert edge even if the next check is
+        // smoking markers with official display_frames: 80 frames (~3.2 s @25fps).
+        // Marker stays visible after the alert edge even if the next check is
         // negative (visual continuity, same pattern as FALL fallLife_)
         for (auto it = smokeLife_.begin(); it != smokeLife_.end();) {
             for (const auto &t : tracks) {
@@ -650,9 +713,14 @@ void VideoWorker::run() {
             }
         }
 
-        // fall sticky life decays every frame (like Python ActionVisualHelper)
+        // fall sticky life decays every frame (Python ActionVisualHelper):
+        // when a track's state expires, its "already reported" flag is cleared
+        // so a genuinely new fall on the same track can alert again.
         for (auto it = fallLife_.begin(); it != fallLife_.end();) {
-            if (--it->second <= 0) it = fallLife_.erase(it); else ++it;
+            if (--it->second <= 0) {
+                fallReported_.erase(it->first);
+                it = fallLife_.erase(it);
+            } else ++it;
         }
 
         auto t1 = std::chrono::high_resolution_clock::now();
@@ -737,10 +805,12 @@ void VideoWorker::capLoop() {
     // File sources end at EOF (backlog analysis).
     while (!stopFlag_) {
         bool ok;
-        if (realtime)
+        if (realtime) {
             ok = cap_.open(atoi(cfg_.video_path.c_str()));
-        else
+            if (ok) applyMaxCameraResolution(cap_);   // 摄像头默认跑最大分辨率
+        } else {
             ok = cap_.open(cfg_.video_path, cv::CAP_FFMPEG);
+        }
         if (!ok) {
             if (!realtime) {
                 std::lock_guard<std::mutex> lk(qMtx_);

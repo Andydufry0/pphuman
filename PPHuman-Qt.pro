@@ -11,7 +11,11 @@ SOURCES += \
     main.cpp \
     MainWindow.cpp \
     VideoWorker.cpp \
-    PPHuman.cpp \
+    PpDetModel.cpp \
+    KptModel.cpp \
+    ActionModels.cpp \
+    FightModel.cpp \
+    FallModel.cpp \
     ByteTracker.cpp \
     BehaviorDetector.cpp \
     TrtEngine.cpp
@@ -20,6 +24,12 @@ HEADERS += \
     MainWindow.h \
     VideoWorker.h \
     PPHuman.h \
+    ModelTypes.h \
+    PpDetModel.h \
+    KptModel.h \
+    ActionModels.h \
+    FightModel.h \
+    FallModel.h \
     ByteTracker.h \
     BehaviorDetector.h \
     TrtEngine.h \

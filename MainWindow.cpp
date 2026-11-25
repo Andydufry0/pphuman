@@ -177,11 +177,12 @@ void MainWindow::setupUI() {
     // token 由 VideoWorker 每次开流前从页面动态解析，这里只存稳定页面地址。
     QMenu *mConn = menuBar()->addMenu("连接");
     connectMenu_ = mConn;
-    // 每次展开菜单时重新枚举本地摄像头，插到最上面（见 refreshLocalCameras）。
-    // 用一个分隔符作为锚点：本地摄像头项全部插在它之前，公共源在其后。
+    // 本地摄像头只在启动时枚举一次（插在分隔符锚点之前，公共源在其后）。
+    // 展开菜单不再重新探测 —— 每次点开都 open/read 十个索引会把菜单卡住；
+    // 需要重新扫描时点菜单底部的"重新扫描本地摄像头"。
     QAction *localAnchor = mConn->addSeparator();
     localCamAnchor_ = localAnchor;
-    connect(mConn, &QMenu::aboutToShow, this, &MainWindow::refreshLocalCameras);
+    QTimer::singleShot(300, this, &MainWindow::refreshLocalCameras);
     // 新接入的摄像头（场地/客户现场），往 cams[] 加一行即可
     static const struct { const char *place; const char *url; } cams[] = {
         {"意大利·威尼斯 圣马可广场（公共广场人流 HLS）",
@@ -244,6 +245,11 @@ void MainWindow::setupUI() {
         connect(a, &QAction::triggered, this, &MainWindow::onConnectSource);
     }
 
+    // 手动重扫（启动只枚举一次，插拔摄像头后点这里，不必重启软件）
+    mConn->addSeparator();
+    QAction *actRescan = mConn->addAction("重新扫描本地摄像头");
+    connect(actRescan, &QAction::triggered, this, &MainWindow::onRescanCameras);
+
     // central: video grid only (alerts are drawn on the frames, logs go to files)
     QWidget *central = new QWidget(this);
     setCentralWidget(central);
@@ -285,7 +291,8 @@ void MainWindow::updateTitle() {
 
 void MainWindow::onAddSource() {
     QString path = QFileDialog::getOpenFileName(
-        this, "选择视频", "", "Video (*.mp4 *.avi *.mkv *.mov);;All (*)");
+        this, "选择视频", QStringLiteral("E:/DeepEpic/PPHuman-Qt/demo_input"),
+        "Video (*.mp4 *.avi *.mkv *.mov);;All (*)");
     if (path.isEmpty()) return;
     placeName_.clear();          // local file: no "place", title = 行为监测
     updateTitle();
@@ -655,7 +662,7 @@ static const SettingEntry kInts[] = {
     {"crowdCount",      nullptr, nullptr, &Config::crowdCount,      false, 0, 5},
     {"runMinFrames",    nullptr, nullptr, &Config::runMinFrames,    false, 0, 5},
     {"fightSampleFreq", nullptr, nullptr, &Config::fightSampleFreq, false, 0, 7},
-    {"fallKeepFrames",  nullptr, nullptr, &Config::fallKeepFrames,  false, 0, 40},
+    {"fallKeepFrames",  nullptr, nullptr, &Config::fallKeepFrames,  false, 0, 80},
     {"analyzeEvery",    nullptr, nullptr, &Config::analyzeEvery,    false, 0, 1},
     {"minPersonH",      nullptr, nullptr, &Config::minPersonH,      false, 0, 80},
 };
@@ -834,7 +841,8 @@ void MainWindow::onSettings() {
     writeLog("INFO", "设置已更新并保存（运行中即时生效）");
 }
 
-// menu 连接: 每次展开时重新枚举本地摄像头（USB / 笔记本自带）。
+// menu 连接: 枚举本地摄像头（USB / 笔记本自带）——启动时一次，或用户点"重新扫描"。
+// 不再挂在 aboutToShow 上：每展开一次菜单就要 open/read 十个索引，菜单会明显卡顿。
 // 用 OpenCV 直接试开索引 i 探测（和 VideoWorker 打开摄像头同一后端，保证
 // 菜单里列出的就一定能打开）。注意 Qt 的 QCameraInfo 在本机实测返回 0
 // （DirectShow 枚举不到 MediaFoundation-only 的 UVC 摄像头），所以不用它。
@@ -888,6 +896,12 @@ void MainWindow::refreshLocalCameras() {
         connectMenu_->insertAction(localCamAnchor_, none);
         localCamActions_.prepend(none);
     }
+    writeLog("INFO", QString("本地摄像头扫描完成: %1 个").arg(validIdx.size()));
+}
+
+// menu 连接: 手动重扫本地摄像头（插拔设备后不必重启软件）
+void MainWindow::onRescanCameras() {
+    refreshLocalCameras();
 }
 
 // menu 连接: switch the whole pipeline to the picked public camera
